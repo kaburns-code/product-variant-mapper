@@ -46,39 +46,3 @@ if uploaded_file:
                             "role": "system",
                             "content": "You are a data assistant. Group products that are variants of the same item. Pick one SKU as the Parent. Return ONLY a list in this format: SKU|PARENT_SKU. If it is a parent or unique, leave PARENT_SKU blank. Example: SKU123|SKU100"
                         },
-                        {
-                            "role": "user",
-                            "content": data_string,
-                        }
-                    ],
-                    model="llama-3.1-8b-instant",
-                )
-
-                # Parse the response
-                raw_response = chat_completion.choices[0].message.content
-                lines = [line.strip() for line in raw_response.split('\n') if "|" in line]
-                
-                # Convert AI response to a mini-map
-                mapping_dict = {}
-                for line in lines:
-                    sku, parent = line.split("|")
-                    mapping_dict[sku.strip()] = parent.strip()
-
-                # Apply mapping back to the batch
-                batch = batch.copy()
-                batch['Variant of'] = batch['SKU'].map(mapping_dict)
-
-                # Save to session state
-                st.session_state.final_df = pd.concat([st.session_state.final_df, batch], ignore_index=True)
-                st.session_state.last_index += len(batch)
-                
-                # Update UI
-                progress_bar.progress(st.session_state.last_index / total_rows)
-                
-            except Exception as e:
-                st.error(f"Rate limit or Error: {e}")
-                st.warning("We've saved your progress. Wait 60 seconds and click 'Resume'.")
-                break
-
-    # Show results and download button if there is data
-    if not st.session_state.final_df.empty:
