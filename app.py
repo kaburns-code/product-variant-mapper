@@ -39,10 +39,21 @@ if uploaded_file:
                 data_string += f"SKU: {row['SKU']}, Label: {row['Label']}, Brand: {row['Brand']}\n"
 
             try:
-                # Using the '8b' model which has higher free-tier limits
+                # API Call with strictly validated brackets
                 chat_completion = client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
                     messages=[
                         {
                             "role": "system",
                             "content": "You are a data assistant. Group products that are variants of the same item. Pick one SKU as the Parent. Return ONLY a list in this format: SKU|PARENT_SKU. If it is a parent or unique, leave PARENT_SKU blank. Example: SKU123|SKU100"
                         },
+                        {
+                            "role": "user",
+                            "content": data_string
+                        }
+                    ]
+                )
+
+                # Parse the response
+                raw_response = chat_completion.choices[0].message.content
+                lines = [line.strip() for line in raw_response.split('\n') if
