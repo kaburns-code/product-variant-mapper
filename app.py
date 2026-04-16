@@ -8,9 +8,7 @@ client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
 st.set_page_config(page_title="Product Mapper", layout="wide")
 st.title("📦 Product Variant Mapper")
-st.info("Sorted by Brand? Good. This script will now process your items in batches.")
 
-# Initialize session state to store our progress
 if 'final_df' not in st.session_state:
     st.session_state.final_df = pd.DataFrame()
 if 'last_index' not in st.session_state:
@@ -19,41 +17,60 @@ if 'last_index' not in st.session_state:
 uploaded_file = st.file_uploader("Upload your Brand-Sorted CSV", type="csv")
 
 if uploaded_file:
-    # Read original data
     input_df = pd.read_csv(uploaded_file)
     total_rows = len(input_df)
     
-    # Progress tracking UI
-    progress_bar = st.progress(st.session_state.last_index / total_rows if total_rows > 0 else 0)
     st.write(f"Processed {st.session_state.last_index} / {total_rows} products.")
+    progress_bar = st.progress(st.session_state.last_index / total_rows if total_rows > 0 else 0)
 
     if st.button("Run / Resume Analysis"):
         batch_size = 15 
         
         for i in range(st.session_state.last_index, total_rows, batch_size):
             batch = input_df.iloc[i : i + batch_size]
-            
-            # Prepare the data for the AI
             data_string = ""
             for _, row in batch.iterrows():
                 data_string += f"SKU: {row['SKU']}, Label: {row['Label']}, Brand: {row['Brand']}\n"
 
             try:
-                # API Call with strictly validated brackets
                 chat_completion = client.chat.completions.create(
                     model="llama-3.1-8b-instant",
                     messages=[
-                        {
-                            "role": "system",
-                            "content": "You are a data assistant. Group products that are variants of the same item. Pick one SKU as the Parent. Return ONLY a list in this format: SKU|PARENT_SKU. If it is a parent or unique, leave PARENT_SKU blank. Example: SKU123|SKU100"
-                        },
-                        {
-                            "role": "user",
-                            "content": data_string
-                        }
+                        {"role": "system", "content": "Return ONLY SKU|PARENT_SKU. If unique, leave PARENT_SKU blank."},
+                        {"role": "user", "content": data_string}
                     ]
                 )
 
-                # Parse the response
                 raw_response = chat_completion.choices[0].message.content
-                lines = [line.strip() for line in raw_response.split('\n') if
+                mapping_dict = {}
+                
+                # Safer parsing loop
+                for line in raw_response.split('\n'):
+                    if "|" in line:
+                        parts = line.split("|")
+                        if len(parts) == 2:
+                            mapping_dict[parts[0].strip()] = parts[1].strip()
+
+                current_batch = batch.copy()
+                current_batch['Variant of'] = current_batch['SKU'].map(mapping_dict)
+
+                st.session_state.final_df = pd.concat([st.session_state.final_df, current_batch], ignore_index=True)
+                st.session_state.last_index += len(current_batch)
+                progress_bar.progress(st.session_state.last_index / total_rows)
+                
+            except Exception as e:
+                st.error(f"Error at row {i}: {e}")
+                break
+
+    if not st.session_state.final_df.empty:
+        st.subheader("Mapped Data Preview")
+        st.dataframe(st.session_state.final_df.head(100))
+        
+        csv_buffer = io.BytesIO()
+        st.session_state.final_df.to_csv(csv_buffer, index=False)
+        st.download_button(
+            label="Download Mapped CSV",
+            data=csv_buffer.getvalue(),
+            file_name="mapped_products.csv",
+            mime="text/csv"
+        )
