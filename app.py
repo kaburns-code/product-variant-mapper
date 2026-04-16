@@ -1,57 +1,84 @@
 import streamlit as st
 import pandas as pd
 from groq import Groq
-import os
+import io
 
-# Initialize Groq Client
+# Initialize Client
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
-st.title("🛍️ Product Variant Mapper (Groq Edition)")
+st.set_page_config(page_title="Product Mapper", layout="wide")
+st.title("📦 Product Variant Mapper")
+st.info("Sorted by Brand? Good. This script will now process your items in batches.")
 
-uploaded_file = st.file_uploader("Upload your Product CSV", type="csv")
+# Initialize session state to store our progress
+if 'final_df' not in st.session_state:
+    st.session_state.final_df = pd.DataFrame()
+if 'last_index' not in st.session_state:
+    st.session_state.last_index = 0
+
+uploaded_file = st.file_uploader("Upload your Brand-Sorted CSV", type="csv")
 
 if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-    st.write(f"Loaded {len(df)} products.")
+    # Read original data
+    input_df = pd.read_csv(uploaded_file)
+    total_rows = len(input_df)
+    
+    # Progress tracking UI
+    progress_bar = st.progress(st.session_state.last_index / total_rows if total_rows > 0 else 0)
+    st.write(f"Processed {st.session_state.last_index} / {total_rows} products.")
 
-    if st.button("Analyze Variants"):
-        results = []
-        # We process in batches of 20 to keep the AI focused
-        batch_size = 20 
+    if st.button("Run / Resume Analysis"):
+        batch_size = 15 
         
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        for i in range(st.session_state.last_index, total_rows, batch_size):
+            batch = input_df.iloc[i : i + batch_size]
+            
+            # Prepare the data for the AI
+            data_string = ""
+            for _, row in batch.iterrows():
+                data_string += f"SKU: {row['SKU']}, Label: {row['Label']}, Brand: {row['Brand']}\n"
 
-        for i in range(0, len(df), batch_size):
-            batch = df.iloc[i:i+batch_size]
-            
-            # Construct the prompt using Label and Brand
-            product_list = "\n".join([f"SKU: {row['SKU']}, Label: {row['Label']}, Brand: {row['Brand']}" for _, row in batch.iterrows()])
-            
-            prompt = f"""
-            Act as a product database expert. Below is a list of products.
-            Identify which products are variants of each other (e.g., same item but different size, color, count, or dosage).
-            
-            RULES:
-            1. For each group of variants, pick one 'Parent SKU' (the most standard version).
-            2. Return a CSV-style list: SKU, Variant_Of
-            3. If a product is unique or is the Parent itself, leave 'Variant_Of' blank.
-            4. ONLY return the CSV rows. No prose.
+            try:
+                # Using the '8b' model which has higher free-tier limits
+                chat_completion = client.chat.completions.create(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are a data assistant. Group products that are variants of the same item. Pick one SKU as the Parent. Return ONLY a list in this format: SKU|PARENT_SKU. If it is a parent or unique, leave PARENT_SKU blank. Example: SKU123|SKU100"
+                        },
+                        {
+                            "role": "user",
+                            "content": data_string,
+                        }
+                    ],
+                    model="llama-3.1-8b-instant",
+                )
 
-            PRODUCTS:
-            {product_list}
-            """
+                # Parse the response
+                raw_response = chat_completion.choices[0].message.content
+                lines = [line.strip() for line in raw_response.split('\n') if "|" in line]
+                
+                # Convert AI response to a mini-map
+                mapping_dict = {}
+                for line in lines:
+                    sku, parent = line.split("|")
+                    mapping_dict[sku.strip()] = parent.strip()
 
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            # Simple parsing of the AI's CSV response
-            output = response.choices[0].message.content
-            # (In a production app, you'd add more robust parsing here)
-            st.text(output) 
-            
-            progress_bar.progress((i + batch_size) / len(df))
-        
-        st.success("Analysis Complete!")
+                # Apply mapping back to the batch
+                batch = batch.copy()
+                batch['Variant of'] = batch['SKU'].map(mapping_dict)
+
+                # Save to session state
+                st.session_state.final_df = pd.concat([st.session_state.final_df, batch], ignore_index=True)
+                st.session_state.last_index += len(batch)
+                
+                # Update UI
+                progress_bar.progress(st.session_state.last_index / total_rows)
+                
+            except Exception as e:
+                st.error(f"Rate limit or Error: {e}")
+                st.warning("We've saved your progress. Wait 60 seconds and click 'Resume'.")
+                break
+
+    # Show results and download button if there is data
+    if not st.session_state.final_df.empty
