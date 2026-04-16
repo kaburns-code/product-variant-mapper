@@ -81,4 +81,4 @@ if uploaded_file:
                 break
 
     # Show results and download button if there is data
-    if not st.session_state.final_df.empty
+    if not st.session_state.final_df.empty:
